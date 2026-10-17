@@ -193,3 +193,30 @@ Freeze features at hour 8 no matter what.
 ## Essential goods priority update
 
 See [`README_MEDICAL_PRIORITY.md`](README_MEDICAL_PRIORITY.md) for the targeted medical and essential goods prioritization changes, regression tests, and copy/paste commands to upload and run this version on the LinuxONE VM. The classification and inventory cover remain demo proxies, not verified medical catalog or live inventory data.
+
+## Demo scenarios and supplier aware priority (latest update)
+
+* `scenarios.py` injects seven labeled use cases (S1 to S7) into every replay: medical goods first, unreliable supplier, newcomer supplier, cold chain break, invoice price spike, short shipment and regional disruption. The same trained models score them as every real shipment.
+* Priority now includes a supplier factor: breach x criticality x stockout x urgency x supplier factor.
+* `python replay.py --n 300 --speed 20000 --reset` includes the scenarios. Add `--no-scenarios` for real shipments only, or `--n 0` for scenarios only.
+* The dashboard has a Scenarios tab, and each alert shows its priority breakdown.
+* Tests: `python -m unittest -v test_scenarios.py test_medical_priority.py`
+* `python test_llm.py` checks the configured LLM.
+* See `TEAM_PLAN.md` for the two person split, the contract between the model and UI work, and the demo script.
+
+## Live web dashboard (recommended on LinuxONE)
+
+Streamlit can't be installed on s390x because its `pyarrow` dependency has no LinuxONE build. `web_dashboard.py` serves a clean, light live dashboard using only the Python standard library, so it runs on the VM with nothing to install.
+
+```bash
+# terminal 1: event stream
+python replay.py --n 300 --speed 20000 --reset
+# terminal 2: dashboard
+python web_dashboard.py --port 8501
+# laptop: tunnel, then open http://localhost:8501
+ssh -i chainsight.pem -L 8501:localhost:8501 linux1@<VM_IP>
+```
+
+What it shows: KPI row, live traffic feed, toast notifications (medical alerts stay until clicked, optional sound), a disruption banner, ranked shipments at risk, and an alert drawer. The drawer has the delivery band, priority breakdown, model drivers, counterfactual options, the GenAI verdict with citations, a draft email, and Approve and Reject buttons. There are also Scenarios, Suppliers (score against order history chart), Anomalies and Platform tabs. Files are in `web/` (index.html, app.css, app.js).
+
+The dashboard opens the database read only, so you can restart the replay with `--reset` while it runs: the page notices and starts the feed again.

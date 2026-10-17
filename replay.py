@@ -5,6 +5,7 @@
 Writes everything to SQLite (chainsight.db) for the dashboard. Safe to stop with Ctrl+C.
 """
 import argparse
+import warnings
 import json
 import platform
 import sqlite3
@@ -13,18 +14,29 @@ import time
 import numpy as np
 import pandas as pd
 
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 from books import PriceBook, SupplierBook, check_quantity
-from config import ART_DIR, BREACH_THRESHOLD, DB_PATH, DELAY_EVENT_LIFT, LLM_MAX_CALLS, LLM_MIN_PRIORITY, ORDERS_PKL
-from decision import needs_approval, options, priority
+from config import (
+    ART_DIR, BREACH_THRESHOLD, PRIORITY_ALERT, DB_PATH,
+    DELAY_EVENT_LIFT, LLM_MAX_CALLS, LLM_MIN_PRIORITY, ORDERS_PKL
+)
+from decision import (
+    needs_approval, options, priority_breakdown, enforce_safety_policy
+)
 from reasoner import evidence_packet, review
 from scoring import Scorer
+import scenarios as scn
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS shipments(shipment_id INTEGER PRIMARY KEY, order_ts TEXT, promised_ts TEXT, ship_mode TEXT,
   market TEXT, region TEXT, department TEXT, category TEXT, product_name TEXT, essential_goods_type TEXT,
   supplier_id TEXT, supplier_name TEXT, criticality INT,
   total_sales REAL, total_qty INT, eta_p10 REAL, eta_p50 REAL, eta_p90 REAL, breach_prob REAL, priority REAL,
-  status TEXT, drivers TEXT, last_event TEXT, updated_ts TEXT, inventory_cover REAL, actual_late INT, alerted INT DEFAULT 0);
+  status TEXT, drivers TEXT, last_event TEXT, updated_ts TEXT, inventory_cover REAL, actual_late INT, alerted INT DEFAULT 0,
+  scenario TEXT, goods_tier INT, priority_detail TEXT);
+CREATE TABLE IF NOT EXISTS scenarios(id TEXT PRIMARY KEY, name TEXT, story TEXT, expected TEXT, shipments TEXT);
 CREATE TABLE IF NOT EXISTS events(event_id TEXT PRIMARY KEY, shipment_id INT, type TEXT, sim_ts TEXT, payload TEXT, score_ms REAL);
 CREATE TABLE IF NOT EXISTS alerts(alert_id TEXT PRIMARY KEY, shipment_id INT, created_ts TEXT, breach_prob REAL, priority REAL,
   verdict TEXT, root_cause TEXT, recommended_action TEXT, justification TEXT, citations TEXT, options TEXT, evidence TEXT,
@@ -62,11 +74,12 @@ def build_events(orders: pd.DataFrame, seed=11):
 
 
 class Engine:
-    def __init__(self, n, seed=11):
+    def __init__(self, n, seed=11, with_scenarios=True):
         o = pd.read_pickle(ORDERS_PKL)
         split = json.loads((ART_DIR / "split.json").read_text())
         hist = o[o.order_ts <= pd.Timestamp(split["val_end"])]
-        test = o[o.order_id.isin(split["test_order_ids"])].sort_values("order_ts").head(n)
+        test_all = o[o.order_id.isin(split["test_order_ids"])].sort_values("order_ts")
+        test = test_all.head(n)
         self.scorer = Scorer()
         self.book = SupplierBook(hist)
         self.prices = PriceBook(hist)
@@ -81,6 +94,15 @@ class Engine:
             for sid, r in self.orders.items()
         }
         self.events = build_events(test, seed)
+        self.scenario_rows = []
+        if with_scenarios:
+            ok = test_all[(test_all.canceled == 0)]
+            base = (ok[ok.ship_mode == "Standard Class"] if (ok.ship_mode == "Standard Class").any() else ok).iloc[0].to_dict()
+            counts = (test if len(test) else test_all).order_region.value_counts()
+            others = [r for r in counts.index if r != base["order_region"]]
+            storm = others[0] if others else None  # busiest other region, so real shipments are hit too
+            sc_events, self.scenario_rows = scn.inject(self, test_all.order_ts.iloc[0], base, storm)
+            self.events = sorted(self.events + sc_events, key=lambda e: e["sim_ts"])
         self.state, self.trail, self.anoms = {}, {}, {}
         self.llm_calls = 0
 
@@ -93,6 +115,8 @@ class Engine:
         self.meta("platform", f"{platform.machine()} | {platform.platform()} | Python {platform.python_version()}")
         self.meta("backend", self.scorer.backend)
         self.write_suppliers("start")
+        self.db.executemany("INSERT OR REPLACE INTO scenarios VALUES(?,?,?,?,?)",
+                            [(r["id"], r["name"], r["story"], r["expected"], r["shipments"]) for r in self.scenario_rows])
 
     def meta(self, k, v):
         self.db.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, str(v)))
@@ -104,12 +128,13 @@ class Engine:
 
     def save_shipment(self, sid, now):
         o, s = self.orders[sid], self.state[sid]
-        self.db.execute("INSERT OR REPLACE INTO shipments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        self.db.execute("INSERT OR REPLACE INTO shipments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             sid, str(o["order_ts"]), str(o["promised_ts"]), o["ship_mode"], o["market"], o["order_region"], o["department"],
             o["category"], o.get("product_name", "Unknown product"), o.get("essential_goods_type", "other"),
             o["supplier_id"], o["supplier_name"], int(o["criticality"]), float(o["total_sales"]),
             int(o["total_qty"]), s["eta_p10"], s["eta_p50"], s["eta_p90"], s["breach_prob"], s["priority"], s["status"],
-            json.dumps(s["drivers"]), s["last_event"], str(now), self.cover[sid], int(o["late"]), int(s["alerted"])))
+            json.dumps(s["drivers"]), s["last_event"], str(now), self.cover[sid], int(o["late"]), int(s["alerted"]),
+            o.get("scenario"), scn.GOODS_TIER.get(o.get("essential_goods_type", "other"), 4), json.dumps(s.get("priority_detail", {}))))
 
     # ---------- event handling ----------
     def record(self, sid):
@@ -122,13 +147,17 @@ class Engine:
         o, s = self.orders[sid], self.state[sid]
         elapsed = (now - o["order_ts"]).total_seconds() / 86400
         to_promise = (o["promised_ts"] - now).total_seconds() / 86400
-        s["priority"] = priority(s["breach_prob"], o["criticality"], max(s["eta_p50"] - elapsed, 0.1),
-                                 self.cover[sid], to_promise)
+        detail = priority_breakdown(s["breach_prob"], o["criticality"], max(s["eta_p50"] - elapsed, 0.1),
+                                    self.cover[sid], to_promise, self.book.score(o["supplier_id"]))
+        s["priority"], s["priority_detail"] = detail["priority"], detail
 
     def handle(self, ev):
         sid, now, kind, p = ev["shipment_id"], ev["sim_ts"], ev["type"], ev["payload"]
         t = time.perf_counter()
         note = ""
+        if kind == "REGION_DISRUPTION":
+            self.region_disruption(ev)
+            return
         self.book.ensure(self.orders[sid]["supplier_id"], self.orders[sid]["supplier_name"], self.orders[sid]["department"])
         if kind == "ORDER_PLACED":
             res = self.scorer.score(self.record(sid))
@@ -153,7 +182,14 @@ class Engine:
             s["breach_prob"] = 1 - (1 - s["breach_prob"]) * (1 - DELAY_EVENT_LIFT)
             for k in ("eta_p10", "eta_p50", "eta_p90"):
                 s[k] += p["delay_days"]
-            note = f"delay {p['delay_days']:.0f} day(s)"
+            note = f"delay {p['delay_days']:.0f} day(s)" + (f", {p['reason']}" if p.get("reason") else "")
+            self.refresh_priority(sid, now)
+        elif kind == "TEMP_EXCURSION":
+            # Event rule: goods outside their temperature range cannot be used, so the order will miss its date
+            msg = f"logged {p['temp_c']} C for {p.get('minutes', '?')} min, allowed {p.get('limit', '2 to 8 C')}"
+            self.add_anomaly(sid, ev, "temperature_excursion", msg)
+            s["breach_prob"] = max(s["breach_prob"], 0.95)
+            note = "cold chain break"
             self.refresh_priority(sid, now)
         elif kind in ("DELIVERED", "CANCELED"):
             o = self.orders[sid]
@@ -165,8 +201,8 @@ class Engine:
         s["last_event"] = kind
         ev["note"] = note
         self.trail.setdefault(sid, []).append({"event_id": ev["event_id"], "type": kind, "sim_ts": str(now), "note": note})
-        if kind in ("ORDER_PLACED", "DELAYED", "INVOICE", "DISPATCHED"):
-            self.maybe_alert(sid, now, kind)
+        if kind in ("ORDER_PLACED", "DELAYED", "INVOICE", "DISPATCHED", "TEMP_EXCURSION"):
+            self.maybe_alert(sid, now, kind, new_anomaly=kind in ("INVOICE", "DISPATCHED") and bool(note))
         ms = round((time.perf_counter() - t) * 1000, 2)
         self.db.execute("INSERT OR REPLACE INTO events VALUES(?,?,?,?,?,?)",
                         (ev["event_id"], sid, kind, str(now), json.dumps(p), ms))
@@ -179,27 +215,77 @@ class Engine:
                             (sup, b.meta[sup]["name"], b.meta[sup]["department"], b.n_orders(sup),
                              round(b.on_time_rate(sup), 3), round(b.quality_rate(sup), 3), b.score(sup), str(now)))
 
+    def region_disruption(self, ev):
+        """Broadcast event: every open shipment in the region gets a carrier delay at once."""
+        p = ev["payload"]
+        hit = [sid for sid, s in self.state.items()
+               if s["status"] in ("OPEN", "IN_TRANSIT") and self.orders[sid]["order_region"] == p["region"]]
+        for sid in hit:
+            self.handle({"event_id": f"{ev['event_id']}_{sid}", "sim_ts": ev["sim_ts"], "shipment_id": sid, "type": "DELAYED",
+                         "payload": {"delay_days": p["delay_days"], "reason": f"regional disruption: {p['reason']}"}})
+        self.db.execute("INSERT OR REPLACE INTO events VALUES(?,?,?,?,?,?)",
+                        (ev["event_id"], 0, ev["type"], str(ev["sim_ts"]), json.dumps(dict(p, affected=len(hit))), 0.0))
+        self.meta("last_disruption", json.dumps({"region": p["region"], "affected": len(hit), "at": str(ev["sim_ts"])}))
+
     def add_anomaly(self, sid, ev, kind, msg):
         self.anoms.setdefault(sid, []).append({"event_id": ev["event_id"], "kind": kind, "detail": msg})
         self.db.execute("INSERT INTO anomalies(shipment_id,event_id,kind,detail,sim_ts) VALUES(?,?,?,?,?)",
                         (sid, ev["event_id"], kind, msg, str(ev["sim_ts"])))
 
-    def maybe_alert(self, sid, now, kind):
+    def maybe_alert(self, sid, now, kind, new_anomaly=False):
+        """Raise an alert when risk crosses the threshold or an anomaly appears; re-review on every new escalation signal."""
         s, o = self.state[sid], self.orders[sid]
         prev = self.db.execute("SELECT verdict FROM alerts WHERE alert_id=?", (f"A{sid}",)).fetchone()
-        new_signal = kind == "DELAYED" or (kind in ("INVOICE", "DISPATCHED") and sid in self.anoms and prev is None)
-        if s["breach_prob"] < BREACH_THRESHOLD and not (sid in self.anoms and prev is None):
+        escalation = kind in ("DELAYED", "TEMP_EXCURSION") or new_anomaly
+        if s["breach_prob"] < BREACH_THRESHOLD and s["priority"] < PRIORITY_ALERT and sid not in self.anoms:
             return
-        if prev is not None and not (prev[0] == "DISMISS" and new_signal):
+        safety_signal = kind == "TEMP_EXCURSION"
+        new_signal = escalation or new_anomaly
+
+        if prev is not None and not (
+            safety_signal
+            or (prev[0] == "DISMISS" and new_signal)
+            or escalation
+        ):
+            
             return
         rec = self.record(sid)
-        opts = options(self.scorer, self.book, rec, s)
+        anomaly_kinds = [
+            str(a.get("kind", "")).strip().lower()
+            for a in self.anoms.get(sid, [])
+        ]
+        cold_chain = "temperature_excursion" in anomaly_kinds
+        opts = options(self.scorer, self.book, rec, s, anomaly_kinds)
+
+        # Safety fallback: ensure a replacement option exists for cold-chain incidents.
+        if cold_chain and not any(x.get("action") == "replace_shipment" for x in opts):
+            fallback_opts = options(
+                self.scorer, self.book, rec, s,
+                anomaly_kinds + ["temperature_excursion"]
+            )
+            replacement = next(
+                (x for x in fallback_opts if x.get("action") == "replace_shipment"),
+                None
+            )
+            if replacement is not None:
+                opts.insert(0, replacement)
         sup = {"name": o["supplier_name"], "score": self.book.score(o["supplier_id"]), "n_orders": self.book.n_orders(o["supplier_id"])}
         packet = evidence_packet({"shipment_id": sid, "criticality": int(o["criticality"]), "ship_mode": o["ship_mode"],
                                   "scheduled_days": float(o["scheduled_days"])},
                                  s, s["drivers"], self.trail.get(sid, []), opts, sup, self.cover[sid], self.anoms.get(sid, []))
-        use_llm = self.llm_calls < LLM_MAX_CALLS and s["priority"] >= LLM_MIN_PRIORITY
+        # Scenario shipments always get the LLM review so the demo stories are complete
+        use_llm = bool(o.get("scenario")) or (self.llm_calls < LLM_MAX_CALLS and s["priority"] >= LLM_MIN_PRIORITY)
         ans = review(packet, opts, use_llm=use_llm)
+
+        anomaly_details = "; ".join(
+            str(a.get("detail", ""))
+            for a in self.anoms.get(sid, [])
+            if str(a.get("kind", "")).strip().lower() == "temperature_excursion"
+        )
+        ans = enforce_safety_policy(
+            ans, opts, anomaly_kinds, anomaly_details
+        )
+
         if use_llm:
             self.llm_calls += 1
         s["alerted"] = 1
@@ -207,7 +293,7 @@ class Engine:
             f"A{sid}", sid, str(now), s["breach_prob"], s["priority"], ans["verdict"], ans["root_cause"],
             ans["recommended_action"], ans["justification"], json.dumps(ans["citations"]), json.dumps(opts),
             json.dumps(packet["evidence"]), ans["draft_email"], int(needs_approval(ans["recommended_action"], o["criticality"])),
-            "OPEN" if ans["verdict"] != "DISMISS" else "DISMISSED", ans.get("source", ""), ans.get("llm_ms", 0),
+            "PENDING_APPROVAL" if needs_approval(ans["recommended_action"], o["criticality"]) else ("OPEN" if ans["verdict"] != "DISMISS" else "DISMISSED"), ans.get("source", ""), ans.get("llm_ms", 0),
             str(o["promised_ts"]), int(o["late"])))
 
     # ---------- main loop ----------
@@ -217,6 +303,8 @@ class Engine:
         for i, ev in enumerate(self.events):
             if prev is not None and speed > 0:
                 gap = (ev["sim_ts"] - prev).total_seconds() / speed
+                if gap > 0:
+                    self.db.commit()  # never hold the write lock while waiting, so dashboard approvals can write
                 time.sleep(min(max(gap, 0), max_sleep))
             prev = ev["sim_ts"]
             self.handle(ev)
@@ -239,8 +327,9 @@ if __name__ == "__main__":
     ap.add_argument("--speed", type=float, default=20000, help="simulated seconds per real second, 0 = no waiting")
     ap.add_argument("--max-sleep", type=float, default=0.5)
     ap.add_argument("--reset", action="store_true")
+    ap.add_argument("--no-scenarios", action="store_true", help="replay only real test period shipments")
     a = ap.parse_args()
-    eng = Engine(a.n)
+    eng = Engine(a.n, with_scenarios=not a.no_scenarios)
     eng.open_db(a.reset)
     try:
         eng.run(a.speed, a.max_sleep)
