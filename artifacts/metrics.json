@@ -1,0 +1,19 @@
+{
+  "backend": "sklearn",
+  "n_train": 44036,
+  "n_val": 9424,
+  "n_test": 9437,
+  "test_period": [
+    "2017-09-05 12:59:00",
+    "2018-01-31 23:38:00"
+  ],
+  "eta_mae_days_model_p50": 1.048,
+  "eta_mae_days_baseline_scheduled": 1.292,
+  "eta_p10_p90_coverage": 0.974,
+  "breach_roc_auc": 0.777,
+  "breach_pr_auc": 0.836,
+  "breach_pr_auc_baseline_rate": 0.575,
+  "brier_raw": 0.1747,
+  "brier_calibrated": 0.1744,
+  "train_seconds": 4.8
+}

@@ -1,0 +1,10 @@
+numpy
+pandas
+scikit-learn
+joblib
+requests
+lightgbm      # optional: code falls back to scikit-learn if this fails on s390x
+streamlit     # optional: use dashboard_lite.py if this fails on s390x
+matplotlib    # optional: charts in the notebook
+jupyterlab    # optional: skip if the VM already has JupyterLab
+# ibm-watsonx-ai  # only if LLM_BACKEND=watsonx
