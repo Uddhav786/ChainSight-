@@ -73,7 +73,7 @@ def options(scorer, book, record, base, anomaly_kinds=()):
         cf = scorer.score(r, explain=False)
         cost = (MODE_COST_RATE.get(new_mode, 0.05) - MODE_COST_RATE.get(mode, 0)) * value
         days = base["eta_p50"] - cf["eta_p50"]
-        name = "expedite" if new_mode == "Same Day" else "upgrade_mode"
+        name = "expedite" if new_mode == "Same Day" else "upgrade_" + new_mode.lower().replace(" ", "_")
         opts.append({"action": name, "detail": f"switch {mode} to {new_mode}",
                      "breach_prob_after": round(cf["breach_prob"], 3), "days_saved": round(days, 2),
                      "added_cost": round(cost, 2),

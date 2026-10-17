@@ -17,7 +17,7 @@ import pandas as pd
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from books import PriceBook, SupplierBook, check_quantity
-from config import ART_DIR, BREACH_THRESHOLD, DB_PATH, DELAY_EVENT_LIFT, LLM_MAX_CALLS, LLM_MIN_PRIORITY, ORDERS_PKL
+from config import ART_DIR, BREACH_THRESHOLD, PRIORITY_ALERT, DB_PATH, DELAY_EVENT_LIFT, LLM_MAX_CALLS, LLM_MIN_PRIORITY, ORDERS_PKL
 from decision import needs_approval, options, priority_breakdown
 from reasoner import evidence_packet, review
 from scoring import Scorer
@@ -196,7 +196,7 @@ class Engine:
         ev["note"] = note
         self.trail.setdefault(sid, []).append({"event_id": ev["event_id"], "type": kind, "sim_ts": str(now), "note": note})
         if kind in ("ORDER_PLACED", "DELAYED", "INVOICE", "DISPATCHED", "TEMP_EXCURSION"):
-            self.maybe_alert(sid, now, kind)
+            self.maybe_alert(sid, now, kind, new_anomaly=kind in ("INVOICE", "DISPATCHED") and bool(note))
         ms = round((time.perf_counter() - t) * 1000, 2)
         self.db.execute("INSERT OR REPLACE INTO events VALUES(?,?,?,?,?,?)",
                         (ev["event_id"], sid, kind, str(now), json.dumps(p), ms))
@@ -226,13 +226,14 @@ class Engine:
         self.db.execute("INSERT INTO anomalies(shipment_id,event_id,kind,detail,sim_ts) VALUES(?,?,?,?,?)",
                         (sid, ev["event_id"], kind, msg, str(ev["sim_ts"])))
 
-    def maybe_alert(self, sid, now, kind):
+    def maybe_alert(self, sid, now, kind, new_anomaly=False):
+        """Raise an alert when risk crosses the threshold or an anomaly appears; re-review on every new escalation signal."""
         s, o = self.state[sid], self.orders[sid]
         prev = self.db.execute("SELECT verdict FROM alerts WHERE alert_id=?", (f"A{sid}",)).fetchone()
-        new_signal = kind in ("DELAYED", "TEMP_EXCURSION") or (kind in ("INVOICE", "DISPATCHED") and sid in self.anoms and prev is None)
-        if s["breach_prob"] < BREACH_THRESHOLD and not (sid in self.anoms and prev is None):
+        escalation = kind in ("DELAYED", "TEMP_EXCURSION") or new_anomaly
+        if s["breach_prob"] < BREACH_THRESHOLD and s["priority"] < PRIORITY_ALERT and sid not in self.anoms:
             return
-        if prev is not None and not (prev[0] == "DISMISS" and new_signal):
+        if prev is not None and not escalation:
             return
         rec = self.record(sid)
         opts = options(self.scorer, self.book, rec, s, [a["kind"] for a in self.anoms.get(sid, [])])
@@ -260,6 +261,8 @@ class Engine:
         for i, ev in enumerate(self.events):
             if prev is not None and speed > 0:
                 gap = (ev["sim_ts"] - prev).total_seconds() / speed
+                if gap > 0:
+                    self.db.commit()  # never hold the write lock while waiting, so dashboard approvals can write
                 time.sleep(min(max(gap, 0), max_sleep))
             prev = ev["sim_ts"]
             self.handle(ev)

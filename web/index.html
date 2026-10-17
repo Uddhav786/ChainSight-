@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChainSight</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" fill="#0f62fe"/><path d="M9 20.5 L14 13 L18 17.5 L23 10.5" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="23" cy="10.5" r="2.2" fill="#fff"/></svg>
+    <div>
+      <div class="brand-name">ChainSight</div>
+      <div class="brand-sub">Real time supply risk for essential goods</div>
+    </div>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="scenarios">Scenarios</button>
+    <button class="tab" data-tab="suppliers">Suppliers</button>
+    <button class="tab" data-tab="anomalies">Anomalies</button>
+  </nav>
+  <div class="top-right">
+    <span class="badge-platform" id="platformBadge" title="">IBM LinuxONE</span>
+    <span class="clock"><span class="live-dot" id="liveDot"></span><span id="simClock">Waiting for replay</span></span>
+    <button class="icon-btn" id="soundBtn" title="Sound for critical alerts: off" aria-label="Toggle sound">
+      <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path id="soundWaves" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" opacity=".25"/></svg>
+    </button>
+    <button class="icon-btn" id="bellBtn" aria-label="Notifications">
+      <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6v3.5L4.5 15v1.5h15V15L18 12.5V9a6 6 0 0 0-6-6zm0 18a2.5 2.5 0 0 0 2.4-1.8H9.6A2.5 2.5 0 0 0 12 21z" fill="currentColor"/></svg>
+      <span class="bell-count hidden" id="bellCount">0</span>
+    </button>
+  </div>
+</header>
+
+<div class="banner hidden" id="banner">
+  <svg viewBox="0 0 24 24" class="banner-icon"><path d="M12 2 1 21h22L12 2zm1 15h-2v-2h2v2zm0-4h-2V9h2v4z" fill="currentColor"/></svg>
+  <span id="bannerText"></span>
+  <button class="banner-close" id="bannerClose" aria-label="Dismiss">Dismiss</button>
+</div>
+
+<div class="history hidden" id="history">
+  <div class="history-head"><span>Notifications</span><button class="link" id="clearHistory">Clear</button></div>
+  <div id="historyList" class="history-list"><div class="empty">No notifications yet</div></div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<main>
+  <section class="view active" id="view-overview">
+    <div class="kpis" id="kpis"></div>
+    <div class="grid-main">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>Shipments at risk</h2>
+            <p class="muted">Open shipments ranked by priority = breach × criticality × stockout × urgency × supplier factor</p>
+          </div>
+          <div class="seg" id="riskFilter">
+            <button class="seg-btn active" data-f="all">All</button>
+            <button class="seg-btn" data-f="essential">Essential goods</button>
+            <button class="seg-btn" data-f="scenarios">Demo scenarios</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="riskTable">
+            <thead><tr><th>Shipment</th><th>Goods</th><th>Supplier</th><th>Delivery band</th><th>Breach</th><th class="w-prio">Priority</th><th>Status</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div class="empty hidden" id="riskEmpty">No open shipments yet. Start the replay to see live risk.</div>
+        </div>
+      </div>
+      <div class="card feed-card">
+        <div class="card-head">
+          <div><h2>Live traffic</h2><p class="muted" id="feedRate">Every event as it arrives</p></div>
+          <button class="link" id="pauseFeed">Pause</button>
+        </div>
+        <div class="feed" id="feed"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="view-scenarios">
+    <div class="section-head">
+      <h2>Demo scenarios</h2>
+      <p class="muted">Scripted shipments scored by the same trained models as every real shipment. Each card fills in live as its shipments stream in.</p>
+    </div>
+    <div class="scenario-grid" id="scenarioGrid"></div>
+  </section>
+
+  <section class="view" id="view-suppliers">
+    <div class="grid-two">
+      <div class="card">
+        <div class="card-head"><div><h2>Score vs order history</h2><p class="muted">Bayesian shrinkage keeps suppliers with few orders near the average, so a lucky newcomer cannot outrank a proven supplier</p></div></div>
+        <div id="supplierChart" class="chart"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div><h2>Leaderboard</h2><p class="muted">Updated on every delivery</p></div></div>
+        <div class="table-wrap tall"><table class="table" id="supplierTable"><thead><tr><th>#</th><th>Supplier</th><th>Orders</th><th>On time</th><th>Quality</th><th class="w-prio">Score</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="view-anomalies">
+    <div class="card">
+      <div class="card-head"><div><h2>Transaction anomalies</h2><p class="muted">Invoice price jumps (robust z score), quantity mismatches and cold chain breaks, flagged as events arrive</p></div></div>
+      <div class="table-wrap tall"><table class="table" id="anomalyTable"><thead><tr><th>Time</th><th>Type</th><th>Shipment</th><th>Detail</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+</main>
+
+<div class="scrim hidden" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div id="drawerTitle"></div>
+    <button class="icon-btn" id="drawerClose" aria-label="Close">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>

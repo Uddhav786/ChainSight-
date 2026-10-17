@@ -203,3 +203,20 @@ See [`README_MEDICAL_PRIORITY.md`](README_MEDICAL_PRIORITY.md) for the targeted 
 * Tests: `python -m unittest -v test_scenarios.py test_medical_priority.py`
 * `python test_llm.py` checks the configured LLM.
 * See `TEAM_PLAN.md` for the two person split, the contract between the model and UI work, and the demo script.
+
+## Live web dashboard (recommended on LinuxONE)
+
+Streamlit can't be installed on s390x because its `pyarrow` dependency has no LinuxONE build. `web_dashboard.py` serves a clean, light live dashboard using only the Python standard library, so it runs on the VM with nothing to install.
+
+```bash
+# terminal 1: event stream
+python replay.py --n 300 --speed 20000 --reset
+# terminal 2: dashboard
+python web_dashboard.py --port 8501
+# laptop: tunnel, then open http://localhost:8501
+ssh -i chainsight.pem -L 8501:localhost:8501 linux1@<VM_IP>
+```
+
+What it shows: KPI row, live traffic feed, toast notifications (medical alerts stay until clicked, optional sound), a disruption banner, ranked shipments at risk, and an alert drawer. The drawer has the delivery band, priority breakdown, model drivers, counterfactual options, the GenAI verdict with citations, a draft email, and Approve and Reject buttons. There are also Scenarios, Suppliers (score against order history chart), Anomalies and Platform tabs. Files are in `web/` (index.html, app.css, app.js).
+
+The dashboard opens the database read only, so you can restart the replay with `--reset` while it runs: the page notices and starts the feed again.

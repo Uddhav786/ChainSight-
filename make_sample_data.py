@@ -90,7 +90,7 @@ def main(n_orders: int, seed: int) -> None:
                 "Department Name": p[2],
                 "Market": market,
                 "Order Country": region,
-                "order date (DateOrders)": ts.strftime("%-m/%-d/%Y %H:%M"),
+                "order date (DateOrders)": ts.strftime("%m/%d/%Y %H:%M"),
                 "Order Id": order_id,
                 "Order Item Id": item_id,
                 "Order Item Product Price": p[4],
@@ -101,7 +101,7 @@ def main(n_orders: int, seed: int) -> None:
                 "Product Card Id": p[0],
                 "Product Name": p[1],
                 "Product Price": p[4],
-                "shipping date (DateOrders)": (ts + pd.Timedelta(days=real)).strftime("%-m/%-d/%Y %H:%M"),
+                "shipping date (DateOrders)": (ts + pd.Timedelta(days=real)).strftime("%m/%d/%Y %H:%M"),
                 "Shipping Mode": mode,
             })
             item_id += 1

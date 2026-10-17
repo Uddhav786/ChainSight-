@@ -17,6 +17,7 @@ PRIOR_K = 20
 
 # Alerting
 BREACH_THRESHOLD = float(os.getenv("BREACH_THRESHOLD", "0.70"))
+PRIORITY_ALERT = float(os.getenv("PRIORITY_ALERT", "0.30"))  # also alert when priority is high even if breach risk is moderate
 DELAY_EVENT_LIFT = 0.75          # a carrier DELAYED event removes 75% of the remaining on time chance
 
 # LLM reasoning

@@ -34,19 +34,20 @@ class ScenarioTests(unittest.TestCase):
             cls.alert[name] = a = {"scenario": sc, "supplier": sup, "priority": prio, "verdict": verdict, "action": action,
                                "options": [o["action"] for o in json.loads(opts)], "approval": appr}
             cls.all.append(a)
+        cls.prio = {(n, sup): p for n, sup, p in db.execute(
+            "SELECT product_name, supplier_id, priority FROM shipments WHERE scenario IS NOT NULL").fetchall()}
         cls.scores = dict(db.execute("SELECT supplier_id, score FROM suppliers").fetchall())
         cls.anoms = {k for (k,) in db.execute("SELECT kind FROM anomalies WHERE shipment_id > 900000")}
         cls.storm = json.loads(db.execute("SELECT value FROM meta WHERE key='last_disruption'").fetchone()[0])
 
     def test_s1_medicine_outranks_office_paper(self):
-        self.assertGreater(self.alert["Insulin glargine 100 IU/mL vials"]["priority"],
-                           3 * self.alert["A4 office paper, 10 reams"]["priority"])
+        self.assertGreater(self.prio[("Insulin glargine 100 IU/mL vials", "SUPM04")],
+                           3 * self.prio[("A4 office paper, 10 reams", "SUPM04")])
 
     def test_s2_unreliable_supplier_ranks_higher(self):
-        vac = [a for a in self.all if a["scenario"] == "S2"]
-        quick = next(a for a in vac if a["supplier"] == "SUPM03")
-        care = next(a for a in vac if a["supplier"] == "SUPM01")
-        self.assertGreater(quick["priority"], care["priority"])
+        vac = "Measles vaccine vials (cold chain)"
+        self.assertGreater(self.prio[(vac, "SUPM03")], self.prio[(vac, "SUPM01")])
+        quick = next(a for a in self.all if a["scenario"] == "S2" and a["supplier"] == "SUPM03")
         self.assertIn("switch_supplier", quick["options"])
 
     def test_s3_newcomer_below_proven(self):
@@ -67,8 +68,8 @@ class ScenarioTests(unittest.TestCase):
 
     def test_s7_relief_outranks_general_in_storm(self):
         self.assertGreater(self.storm["affected"], 1)
-        self.assertGreater(self.alert["Oral rehydration salts, relief kits"]["priority"],
-                           self.alert["Folding chairs, set of 4"]["priority"])
+        self.assertGreater(self.prio[("Oral rehydration salts, relief kits", "SUPM01")],
+                           self.prio[("Folding chairs, set of 4", "SUPM04")])
 
 
 if __name__ == "__main__":
