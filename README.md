@@ -193,3 +193,13 @@ Freeze features at hour 8 no matter what.
 ## Essential goods priority update
 
 See [`README_MEDICAL_PRIORITY.md`](README_MEDICAL_PRIORITY.md) for the targeted medical and essential goods prioritization changes, regression tests, and copy/paste commands to upload and run this version on the LinuxONE VM. The classification and inventory cover remain demo proxies, not verified medical catalog or live inventory data.
+
+## Demo scenarios and supplier aware priority (latest update)
+
+* `scenarios.py` injects seven labeled use cases (S1 to S7) into every replay: medical goods first, unreliable supplier, newcomer supplier, cold chain break, invoice price spike, short shipment and regional disruption. The same trained models score them as every real shipment.
+* Priority now includes a supplier factor: breach x criticality x stockout x urgency x supplier factor.
+* `python replay.py --n 300 --speed 20000 --reset` includes the scenarios. Add `--no-scenarios` for real shipments only, or `--n 0` for scenarios only.
+* The dashboard has a Scenarios tab, and each alert shows its priority breakdown.
+* Tests: `python -m unittest -v test_scenarios.py test_medical_priority.py`
+* `python test_llm.py` checks the configured LLM.
+* See `TEAM_PLAN.md` for the two person split, the contract between the model and UI work, and the demo script.

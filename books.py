@@ -23,6 +23,13 @@ class SupplierBook:
         self.total = history.groupby("supplier_id").size().to_dict()
         self.quality_ok = history.groupby("supplier_id")["canceled"].apply(lambda s: (1 - s).sum()).to_dict()
 
+    def seed(self, sid, name, department, delivered, on_time, total=None, quality_ok=None):
+        """Register a supplier with a known history (used by demo scenarios)."""
+        self.meta[sid] = {"name": name, "department": department}
+        self.n[sid], self.on_time[sid] = delivered, on_time
+        self.total[sid] = total if total is not None else delivered
+        self.quality_ok[sid] = quality_ok if quality_ok is not None else self.total[sid]
+
     def ensure(self, sid, name="", department=""):
         if sid not in self.meta:
             self.meta[sid] = {"name": name, "department": department}

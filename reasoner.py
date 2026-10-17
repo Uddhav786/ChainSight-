@@ -97,15 +97,26 @@ def _call_openai(packet):
     return r.json()["choices"][0]["message"]["content"]
 
 
+_WX_MODEL = None
+
+
+def _watsonx_model():
+    """Built once and reused (checked against ibm-watsonx-ai 1.8)."""
+    global _WX_MODEL
+    if _WX_MODEL is None:
+        from ibm_watsonx_ai import Credentials
+        from ibm_watsonx_ai.foundation_models import ModelInference
+        _WX_MODEL = ModelInference(
+            model_id=os.getenv("LLM_MODEL", "ibm/granite-3-8b-instruct"),
+            credentials=Credentials(url=os.environ["WATSONX_URL"], api_key=os.environ["WATSONX_APIKEY"]),
+            project_id=os.getenv("WATSONX_PROJECT_ID"), space_id=os.getenv("WATSONX_SPACE_ID"),
+            params={"temperature": 0, "max_tokens": 600})
+    return _WX_MODEL
+
+
 def _call_watsonx(packet):
-    # Verify against the SDK version from the IBM lab; this follows ibm-watsonx-ai 1.x
-    from ibm_watsonx_ai import Credentials
-    from ibm_watsonx_ai.foundation_models import ModelInference
-    model = ModelInference(model_id=os.getenv("LLM_MODEL", "ibm/granite-3-8b-instruct"),
-                           credentials=Credentials(url=os.environ["WATSONX_URL"], api_key=os.environ["WATSONX_APIKEY"]),
-                           project_id=os.environ["WATSONX_PROJECT_ID"], params={"temperature": 0, "max_tokens": 600})
-    out = model.chat(messages=[{"role": "system", "content": SYSTEM},
-                               {"role": "user", "content": json.dumps(packet)}])
+    out = _watsonx_model().chat(messages=[{"role": "system", "content": SYSTEM},
+                                          {"role": "user", "content": json.dumps(packet)}])
     return out["choices"][0]["message"]["content"]
 
 
@@ -113,19 +124,25 @@ def _mock(packet):
     """Offline reviewer with the same contract as the LLM, so the pipeline and UI work without keys."""
     ev = {e["id"]: e["text"] for e in packet["evidence"]}
     delays = [i for i in ev if i.startswith("E") and "DELAYED" in ev[i]]
+    anomalies = [i for i in ev if i.startswith("anomaly:")]
     feats = [i for i in ev if i.startswith("feature:")]
     prob = float(re.search(r"probability ([0-9.]+)", ev["model_breach"]).group(1))
     sup = float(re.search(r"score ([0-9.]+)", ev["supplier_score"]).group(1))
-    if delays or prob >= 0.85:
+    if delays or anomalies or prob >= 0.85:
         verdict = "CONFIRM"
     elif prob < 0.78 and sup >= 62:
         verdict = "DISMISS"
     else:
         verdict = "DOWNGRADE"
     action = packet["options"][0] if verdict != "DISMISS" else "monitor"
-    cites = (delays[:1] + feats[:2] + ["model_breach", f"option:{action}"])
+    cites = (anomalies[:1] + delays[:1] + feats[:2] + ["model_breach", f"option:{action}"])
     top = ev[feats[0]].split(" (")[0] if feats else "model risk"
-    cause = "carrier reported a delay" if delays else f"risk driven mainly by {top}"
+    if anomalies:
+        cause = ev[anomalies[0]].replace("_", " ")
+    elif delays:
+        cause = "carrier reported a delay" + (f" ({ev[delays[0]].split(', ', 1)[1]})" if ", " in ev[delays[0]] else "")
+    else:
+        cause = f"risk driven mainly by {top}"
     return json.dumps({
         "verdict": verdict, "root_cause": cause.capitalize() + ".",
         "recommended_action": action,
