@@ -17,11 +17,17 @@ import pandas as pd
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from books import PriceBook, SupplierBook, check_quantity
-from config import ART_DIR, BREACH_THRESHOLD, PRIORITY_ALERT, DB_PATH, DELAY_EVENT_LIFT, LLM_MAX_CALLS, LLM_MIN_PRIORITY, ORDERS_PKL
-from decision import needs_approval, options, priority_breakdown
+from config import (
+    ART_DIR, BREACH_THRESHOLD, PRIORITY_ALERT, DB_PATH,
+    DELAY_EVENT_LIFT, LLM_MAX_CALLS, LLM_MIN_PRIORITY, ORDERS_PKL
+)
+from decision import (
+    needs_approval, options, priority_breakdown, enforce_safety_policy
+)
 from reasoner import evidence_packet, review
 from scoring import Scorer
 import scenarios as scn
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS shipments(shipment_id INTEGER PRIMARY KEY, order_ts TEXT, promised_ts TEXT, ship_mode TEXT,
@@ -233,10 +239,36 @@ class Engine:
         escalation = kind in ("DELAYED", "TEMP_EXCURSION") or new_anomaly
         if s["breach_prob"] < BREACH_THRESHOLD and s["priority"] < PRIORITY_ALERT and sid not in self.anoms:
             return
-        if prev is not None and not escalation:
+        safety_signal = kind == "TEMP_EXCURSION"
+        new_signal = escalation or new_anomaly
+
+        if prev is not None and not (
+            safety_signal
+            or (prev[0] == "DISMISS" and new_signal)
+            or escalation
+        ):
+            
             return
         rec = self.record(sid)
-        opts = options(self.scorer, self.book, rec, s, [a["kind"] for a in self.anoms.get(sid, [])])
+        anomaly_kinds = [
+            str(a.get("kind", "")).strip().lower()
+            for a in self.anoms.get(sid, [])
+        ]
+        cold_chain = "temperature_excursion" in anomaly_kinds
+        opts = options(self.scorer, self.book, rec, s, anomaly_kinds)
+
+        # Safety fallback: ensure a replacement option exists for cold-chain incidents.
+        if cold_chain and not any(x.get("action") == "replace_shipment" for x in opts):
+            fallback_opts = options(
+                self.scorer, self.book, rec, s,
+                anomaly_kinds + ["temperature_excursion"]
+            )
+            replacement = next(
+                (x for x in fallback_opts if x.get("action") == "replace_shipment"),
+                None
+            )
+            if replacement is not None:
+                opts.insert(0, replacement)
         sup = {"name": o["supplier_name"], "score": self.book.score(o["supplier_id"]), "n_orders": self.book.n_orders(o["supplier_id"])}
         packet = evidence_packet({"shipment_id": sid, "criticality": int(o["criticality"]), "ship_mode": o["ship_mode"],
                                   "scheduled_days": float(o["scheduled_days"])},
@@ -244,6 +276,16 @@ class Engine:
         # Scenario shipments always get the LLM review so the demo stories are complete
         use_llm = bool(o.get("scenario")) or (self.llm_calls < LLM_MAX_CALLS and s["priority"] >= LLM_MIN_PRIORITY)
         ans = review(packet, opts, use_llm=use_llm)
+
+        anomaly_details = "; ".join(
+            str(a.get("detail", ""))
+            for a in self.anoms.get(sid, [])
+            if str(a.get("kind", "")).strip().lower() == "temperature_excursion"
+        )
+        ans = enforce_safety_policy(
+            ans, opts, anomaly_kinds, anomaly_details
+        )
+
         if use_llm:
             self.llm_calls += 1
         s["alerted"] = 1
@@ -251,7 +293,7 @@ class Engine:
             f"A{sid}", sid, str(now), s["breach_prob"], s["priority"], ans["verdict"], ans["root_cause"],
             ans["recommended_action"], ans["justification"], json.dumps(ans["citations"]), json.dumps(opts),
             json.dumps(packet["evidence"]), ans["draft_email"], int(needs_approval(ans["recommended_action"], o["criticality"])),
-            "OPEN" if ans["verdict"] != "DISMISS" else "DISMISSED", ans.get("source", ""), ans.get("llm_ms", 0),
+            "PENDING_APPROVAL" if needs_approval(ans["recommended_action"], o["criticality"]) else ("OPEN" if ans["verdict"] != "DISMISS" else "DISMISSED"), ans.get("source", ""), ans.get("llm_ms", 0),
             str(o["promised_ts"]), int(o["late"])))
 
     # ---------- main loop ----------

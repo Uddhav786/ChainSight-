@@ -21,8 +21,9 @@ from config import ART_DIR  # noqa: E402
 class ScenarioTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from replay import Engine
-        eng = Engine(150)
+        import replay
+        replay.DB_PATH = TMP_DB
+        eng = replay.Engine(150)
         eng.open_db(reset=True)
         eng.run(speed=0, max_sleep=0)
         db = sqlite3.connect(TMP_DB)
