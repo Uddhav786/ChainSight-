@@ -1,222 +1,406 @@
-# ChainSight: step by step run guide
+# ChainSight
 
-ChainSight replays supply chain events as a live stream on IBM LinuxONE. Every event is scored by predictive models: delivery date band, calibrated SLA breach probability, supplier score and anomaly checks. Each risky shipment gets fix options rescored as counterfactuals, and a generative AI reviewer has to cite its evidence. A live dashboard shows everything.
+### Health-First, Dynamic Supply-Chain Risk Intelligence on IBM LinuxONE
 
-The whole pipeline has been run end to end on sample data, including the notebook.
+**ChainSight prioritizes what matters most when supply chains are under pressure.** Not every delayed shipment has the same consequences. A delay affecting essential medicines or other critical health products can be far more consequential than a delay affecting a routine package.
 
-## Files
+ChainSight continuously evaluates shipment events and dynamically ranks shipments based on **health criticality, delivery-breach risk, urgency, stockout exposure, and supplier reliability**. As operational conditions change, shipment priorities can change too, helping teams identify which shipments need attention first and where intervention may be necessary.
 
-| File | What it does | Owner |
-| --- | --- | --- |
-| `ChainSight.ipynb` | JupyterLab notebook that runs the whole pipeline with charts (the "ML on LinuxONE" demo) | Everyone |
-| `check_env.py` | Prints the architecture, packages and a timing test (first screenshot for judges) | A |
-| `make_sample_data.py` | Creates a sample CSV with the DataCo columns, so everyone can start before the real data arrives | B |
-| `prepare_data.py` | Turns DataCo order items into one row per shipment, adds supplier and criticality columns and the supplier history feature | B |
-| `features.py` | One feature builder shared by training and live scoring | C |
-| `train.py` | Quantile delivery models (P10, P50, P90) and the calibrated breach classifier, on a time based split | C |
-| `books.py` | Bayesian supplier scores, robust z price check, quantity check | B |
-| `scoring.py` | Scores one shipment and explains it (TreeSHAP from LightGBM) | C |
-| `decision.py` | Priority formula, counterfactual options, approval policy | C |
-| `reasoner.py` | LLM evidence packet, prompt, validator, mock and real backends, rule fallback | D |
-| `replay.py` | Builds the event stream, scores every event, writes to SQLite | A |
-| `app.py` | Streamlit dashboard | D |
-| `dashboard_lite.py` | Fallback dashboard that needs only the Python standard library | A |
-| `evaluate.py` | Evaluation report built from real runs | B |
-| `config.py` | All settings: thresholds, criticality map, LLM backend | Everyone |
+The platform combines predictive delivery-risk models, event-driven scoring, explainable priority rankings, counterfactual intervention options, and an optional generative-AI reviewer. A live dashboard makes shipment priorities, risk drivers, anomalies, recommendations, and approval status visible to decision-makers.
 
-## Step 1: log in to the LinuxONE VM
+Running on **IBM LinuxONE with Linux on `s390x`**, ChainSight demonstrates an explainable, event-driven approach to supply-chain risk intelligence on an enterprise computing platform.
 
-Create the VM with the image **Ubuntu24.04-Datathon** and the flavor **AI_LAB**, and download the SSH key. Then, from your laptop:
+**Our core idea:** Prioritize shipments by the potential consequences of failure, not just by their delivery status. Protect essential health products first while dynamically adapting to changing operational risks.
 
-```bash
+> **Demo status:** The project uses public/sample supply-chain data and
+> simulated events. Medical classification and inventory coverage are
+> demo proxies, not verified medical catalog data or live inventory
+> feeds. See [Assumptions and
+> limitations](#assumptions-and-limitations).
+
+## What ChainSight Does
+
+1. **Prioritizes essential health shipments:** Uses configurable criticality signals to give greater attention to shipments where delays or failures may have more serious consequences.
+2. **Dynamically re-ranks shipments:** Updates operational priorities using delivery-breach risk, urgency, stockout exposure, supplier reliability, and shipment criticality.
+3. **Predicts delivery risk:** Estimates delivery-time ranges and the probability of an SLA breach.
+4. **Explains risk drivers:** Presents available model and scoring evidence to help teams understand why a shipment is prioritized.
+5. **Detects operational disruptions:** Identifies or simulates delays, invoice-price spikes, quantity mismatches, and cold-chain excursions.
+6. **Evaluates possible interventions:** Scores counterfactual options such as monitoring, shipment upgrades, supplier switching, shipment splitting, and replacement where applicable.
+7. **Supports explainable decisions:** An optional LLM reviewer evaluates permitted actions against an evidence packet, with output validation and rule-based fallback.
+8. **Keeps humans in control:** Persists alerts, recommendations, and approval states so consequential interventions can be reviewed.
+
+For cold-chain scenarios, the safety policy can recommend replacement and require human approval even when the estimated financial net value is negative. This reflects the principle that protecting potentially compromised health products can take precedence over short-term shipment economics. It is a demonstration policy, not a substitute for clinical, regulatory, or quality-system approval.
+
+## Architecture
+
+```text
+Shipment Data + Simulated Events
+              |
+              v
+Feature Processing and ML Scoring
+  - Delivery-time estimates (P10/P50/P90)
+  - Calibrated SLA-breach probability
+  - Model drivers, where supported
+              |
+              v
+Event and Anomaly Processing
+              |
+              v
+Dynamic Priority Engine
+  - Health criticality
+  - Delivery-breach risk
+  - Urgency and stockout exposure
+  - Supplier-aware ranking
+              |
+              v
+Decision and Intervention Engine
+  - Counterfactual action options
+  - Safety and approval policies
+              |
+              v
+Optional LLM Reviewer
+  - Evidence-bounded recommendations
+  - Schema, action, and citation validation
+  - Rule-based fallback
+              |
+              v
+SQLite Database
+              |
+              v
+Live Dashboard
+  - Ranked shipments
+  - Risk drivers and alerts
+  - Recommended interventions
+  - Approval status
+
+### IBM LinuxONE deployment
+
+The Python pipeline is intended to run on an IBM LinuxONE VM using Linux
+on `s390x`. `check_env.py` reports runtime architecture and package
+information. Running on LinuxONE demonstrates deployment compatibility;
+it does **not** by itself prove IBM-specific ML acceleration, configured
+confidential computing, or production high availability.
+
+## Repository map
+
+  -----------------------------------------------------------------------
+  File                                Purpose
+  ----------------------------------- -----------------------------------
+  `ChainSight.ipynb`                  Notebook walkthrough for platform,
+                                      data, training, replay, and
+                                      evaluation
+
+  `check_env.py`                      Reports architecture, package
+                                      environment, and timing check
+
+  `make_sample_data.py`               Generates sample data for
+                                      development
+
+  `prepare_data.py`                   Converts DataCo order data to
+                                      shipment-level records and features
+
+  `features.py`                       Shared feature builder
+
+  `train.py`                          Trains delivery quantile models and
+                                      calibrated breach classifier
+
+  `books.py`                          Supplier statistics and
+                                      price/quantity checks
+
+  `scoring.py`                        Shipment scoring and model-driver
+                                      explanations
+
+  `decision.py`                       Priority calculation,
+                                      counterfactual options,
+                                      safety/approval policy
+
+  `reasoner.py`                       Evidence packet, LLM backends,
+                                      validation, fallback logic
+
+  `scenarios.py`                      Labeled demo scenarios
+
+  `replay.py`                         Event replay, scoring, and SQLite
+                                      persistence
+
+  `web_dashboard.py`                  Lightweight dashboard server using
+                                      Python standard library
+
+  `web/`                              Dashboard HTML, CSS, and JavaScript
+
+  `app.py`                            Optional Streamlit dashboard
+
+  `dashboard_lite.py`                 Alternative lightweight dashboard
+
+  `evaluate.py`                       Evaluation report generation
+
+  `config.py`                         Runtime settings and thresholds
+
+  `test_scenarios.py`                 Scenario and priority regression
+                                      tests
+
+  `test_medical_priority.py`          Medical/essential-goods tests, if
+                                      present
+
+  `test_llm.py`                       LLM configuration smoke test
+
+  -----------------------------------------------------------------------
+
+## Requirements
+
+-   IBM LinuxONE VM with a supported Linux image; the hackathon setup
+    used Ubuntu 24.04 on `s390x`.
+-   Python 3, `venv`, and compatible builds of NumPy, pandas,
+    scikit-learn, joblib, requests, and Matplotlib.
+-   Optional: LightGBM, if a compatible `s390x` build is available.
+-   Optional: a real LLM endpoint. The mock reviewer supports offline
+    demos.
+-   SSH access to the VM and a browser on your laptop.
+
+Package availability on `s390x` can differ from x86_64. Prefer versions
+supported by the hackathon VM image.
+
+## Quick start on IBM LinuxONE
+
+### 1. Connect to the VM
+
+Create the VM using the hackathon-provided Ubuntu image and download its
+SSH key. The username may be `linux1` or `ubuntu`.
+
+``` bash
 chmod 600 chainsight.pem
-scp -i chainsight.pem ChainSight_code.zip ubuntu@<VM_IP>:~/      # the user may be linux1 instead of ubuntu
-ssh -i chainsight.pem ubuntu@<VM_IP>
+scp -i chainsight.pem ChainSight_code.zip <VM_USER>@<VM_IP>:~/
+ssh -i chainsight.pem <VM_USER>@<VM_IP>
 ```
 
-To let teammates in, add each person's public key to `~/.ssh/authorized_keys` on the VM. Never share the private key.
+Replace `<VM_USER>` and `<VM_IP>` with your VM details. Never share your
+private SSH key.
 
-## Step 2: install (one time, about 15 minutes)
+### 2. Install dependencies
+
+Run on the VM:
+
+``` bash
+sudo apt update
+sudo apt install -y python3-venv python3-pip unzip
+unzip ChainSight_code.zip
+cd chainsight
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install numpy pandas scikit-learn joblib requests matplotlib jupyterlab
+```
+
+Optional:
+
+``` bash
+pip install lightgbm  # Skip if a compatible s390x build is unavailable
+```
+
+Check the environment:
+
+``` bash
+python check_env.py
+python -c "import platform; print(platform.machine())"
+```
+
+On an `s390x` VM, the architecture should print `s390x`.
+
+### 3. Prepare data
+
+For the public DataCo dataset: 1. Obtain **DataCo Smart Supply Chain for
+Big Data Analysis** from its source. 2. Place
+`DataCoSupplyChainDataset.csv` in `data/`. 3. Follow the notebook or
+data-preparation/training workflow in the current checkout.
+
+Expected location: `chainsight/data/DataCoSupplyChainDataset.csv`.
+
+If the source dataset is unavailable, use the sample-data workflow.
+Check `make_sample_data.py` and `ChainSight.ipynb` for the exact
+sequence.
+
+### 4. Optional: run the notebook
 
 On the VM:
 
-```bash
-sudo apt update && sudo apt install -y python3-venv python3-pip unzip
-unzip ChainSight_code.zip && cd chainsight
-python3 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-pip install numpy pandas scikit-learn joblib requests matplotlib jupyterlab
-pip install lightgbm      # optional: if it fails or takes forever, skip it (scikit-learn is used instead)
-pip install streamlit     # optional: if it fails, use dashboard_lite.py
-python check_env.py       # SCREENSHOT: it shows s390x
-```
-
-If a package has no s390x build and pip tries to compile it for too long, ask the organizers which Python environment the IBM AI labs used and install into that one instead.
-
-## Step 3: open JupyterLab
-
-On the VM, in the `chainsight` folder:
-
-```bash
+``` bash
 source .venv/bin/activate
 jupyter lab --no-browser --port 8888
 ```
 
-Copy the link with `token=` that it prints. Then on your laptop, open a tunnel. It also forwards the dashboard port you'll use later.
+From a separate laptop terminal, open a tunnel:
 
-```bash
-ssh -i chainsight.pem -L 8888:localhost:8888 -L 8501:localhost:8501 ubuntu@<VM_IP>
+``` bash
+ssh -i chainsight.pem -L 8888:127.0.0.1:8888 <VM_USER>@<VM_IP>
 ```
 
-Paste the link into your browser, replacing the host part with `localhost:8888`. If the VM image already has JupyterLab running from the IBM lab, just open it and upload the zip there.
+Open the Jupyter token URL, replacing the host with `localhost:8888`.
+Open `ChainSight.ipynb` and choose **Run → Run All Cells**.
 
-## Step 4: get the data
+## Run the live demo
 
-1. On a laptop, download "DataCo Smart Supply Chain for Big Data Analysis" from Kaggle. You need the file `DataCoSupplyChainDataset.csv`.
-2. Upload it into `chainsight/data/` with JupyterLab's upload button, or copy it over with scp:
-   ```bash
-   scp -i chainsight.pem DataCoSupplyChainDataset.csv ubuntu@<VM_IP>:~/chainsight/data/
-   ```
-3. If you skip this step, the notebook generates sample data automatically, so nobody has to wait.
+Use two terminals on the VM, from the repository root, with `.venv`
+activated.
 
-## Step 5: run the notebook
+### Terminal 1: replay events
 
-Open `ChainSight.ipynb` and choose Run > Run All Cells. It takes about a minute on sample data and a few minutes on the full DataCo file.
-
-| Section | What you get |
-| --- | --- |
-| 1 Platform check | s390x proof (screenshot) |
-| 2 Data | Shipments table, late rate, supplier count |
-| 3 Train | Metrics: delivery MAE against promised days, band coverage, PR AUC against the late rate, Brier before and after calibration |
-| 4 Inside the models | Calibration chart, delivery band chart, supplier leaderboard, the newcomer vs proven supplier example |
-| 5 One shipment | Drivers, counterfactual options, GenAI verdict with citations, validator rejecting a fake citation |
-| 6 Replay | A short live replay so there is data to evaluate |
-| 7 Evaluation | The report to use on slides |
-
-The scripts also run on their own from a terminal (`python train.py` and so on), and the results are the same.
-
-## Step 6: live demo (two JupyterLab terminals)
-
-In JupyterLab, choose File > New > Terminal twice.
-
-Terminal 1, the event stream:
-```bash
-cd ~/chainsight && source .venv/bin/activate
-python replay.py --n 1500 --speed 20000 --reset
-```
-
-Terminal 2, the dashboard:
-```bash
-cd ~/chainsight && source .venv/bin/activate
-streamlit run app.py --server.port 8501 --server.address 0.0.0.0
-# fallback: python dashboard_lite.py --port 8501
-```
-
-Open http://localhost:8501 on your laptop (through the tunnel from Step 3). The dashboard has five tabs: Live risk, Alert detail (delivery band, drivers, options, GenAI verdict, citations, draft email, Approve button), Suppliers, Anomalies and Platform.
-
-How the replay flags work:
-* `--speed 20000` means one simulated day takes about 4 seconds. Use `--speed 0` for a fast full run.
-* `--n` sets how many test period shipments to replay.
-* Each shipment emits ORDER_PLACED, INVOICE, DISPATCHED, sometimes DELAYED, and then DELIVERED or CANCELED.
-
-## Step 7: connect a real LLM
-
-The default `LLM_BACKEND=mock` works offline with the same contract, so the demo never breaks. To use a real model, set these variables in the terminal before you start the replay or JupyterLab:
-
-```bash
-# Any OpenAI compatible endpoint
-export LLM_BACKEND=openai LLM_BASE_URL=https://.../v1 LLM_API_KEY=... LLM_MODEL=...
-
-# IBM watsonx.ai (Granite)
-pip install ibm-watsonx-ai
-export LLM_BACKEND=watsonx WATSONX_URL=https://us-south.ml.cloud.ibm.com WATSONX_APIKEY=... WATSONX_PROJECT_ID=... LLM_MODEL=ibm/granite-3-8b-instruct
-```
-
-Check the watsonx call in `reasoner.py` against the SDK version used in the IBM lab. `LLM_MAX_CALLS` (default 40) caps LLM calls per run; lower priority alerts get rule based text instead. Every LLM answer goes through `validate()`. A wrong schema, an action that isn't one of the options, or a citation missing from the evidence packet gets the answer rejected and replaced with a rule alert.
-
-If the VM can't reach the LLM API, run the GenAI part on a laptop with the same files, and say so in the pitch.
-
-## Step 8: final numbers
-
-```bash
-python replay.py --n 1500 --speed 0 --reset
-python evaluate.py          # writes artifacts/eval_report.md
-```
-
-Use only numbers from this report on slides, and only GenAI numbers from runs with a real LLM.
-
-## Hour by hour plan (four people, about 10 hours)
-
-| Hour | A: Platform | B: Data and eval | C: Models | D: GenAI and product |
-| --- | --- | --- | --- | --- |
-| 0 to 1 | Steps 1 to 3, share VM access | Download DataCo | Run the notebook on sample data | Choose the LLM, get keys |
-| 1 to 3 | Replay on sample data | Real data through the notebook | Train on real data, tune | Prompt and validator with the real LLM |
-| 3 to 4 | **Integration 1:** real models in the replay | Check the supplier table makes sense | Check drivers and options | Dashboard running |
-| 4 to 7 | Event timing, two replays in parallel for a scaling screenshot | `evaluate.py`, metric slides | Better features if time allows | Polish Alert detail, pick the demo shipment |
-| 7 to 8 | **Integration 2:** full run with the real LLM | Final eval report | Freeze models | Demo script |
-| 8 to 10 | Evidence screenshots | Video help | Final metrics slide | Record and edit the video |
-
-Freeze features at hour 8 no matter what.
-
-## Evidence screenshots for judging criterion 3
-
-1. `check_env.py` output showing s390x and the core count
-2. The notebook's training metrics and charts, run on the VM
-3. The replay terminal next to the dashboard
-4. The Platform tab with per event processing time
-5. Two replays at once, using different `CHAINSIGHT_DB` files, to show scaling
-6. If time allows, the app running in a Podman container (`podman ps`)
-7. Keys held in environment variables, never in code
-
-## Assumptions to state honestly in the pitch
-
-1. DataCo has no supplier field. A supplier is a department fulfilment hub per market (`prepare_data.py`).
-2. Criticality comes from a department mapping in `config.py`. Health and Beauty stands in for medical goods.
-3. Carrier DELAYED events and invoice or quantity anomalies are simulated in `replay.py` with known labels, so detection can be measured.
-4. A DELAYED event updates breach probability with a stated rule (`DELAY_EVENT_LIFT`), not a retrained model.
-5. The mock reviewer is a stand in. Report GenAI results only from real LLM runs.
-6. Kafka, PostgreSQL, FastAPI and Machine Learning for z/OS are the production design. The datathon build uses an in process event loop and SQLite.
-
-## Troubleshooting
-
-| Problem | Fix |
-| --- | --- |
-| `lightgbm` won't install | Ignore it. `train.py` reports `"backend": "sklearn"` and everything else works. |
-| `streamlit` won't install | Run `python dashboard_lite.py` instead. |
-| `st.fragment` error | Streamlit is older than 1.37. Upgrade it, or use the lite dashboard. |
-| Notebook can't find modules | Open the notebook from inside the `chainsight` folder. |
-| Too many alerts | Raise `BREACH_THRESHOLD`, for example `export BREACH_THRESHOLD=0.8`. DataCo has a high late rate. |
-| Replay too slow for the video | Use a smaller `--n` or a higher `--speed`. |
-| Date parsing error | Check the format of the `order date (DateOrders)` column. |
-| Can't open the dashboard | Make sure the SSH tunnel from Step 3 is open, then use http://localhost:8501. |
-
-## Essential goods priority update
-
-See [`README_MEDICAL_PRIORITY.md`](README_MEDICAL_PRIORITY.md) for the targeted medical and essential goods prioritization changes, regression tests, and copy/paste commands to upload and run this version on the LinuxONE VM. The classification and inventory cover remain demo proxies, not verified medical catalog or live inventory data.
-
-## Demo scenarios and supplier aware priority (latest update)
-
-* `scenarios.py` injects seven labeled use cases (S1 to S7) into every replay: medical goods first, unreliable supplier, newcomer supplier, cold chain break, invoice price spike, short shipment and regional disruption. The same trained models score them as every real shipment.
-* Priority now includes a supplier factor: breach x criticality x stockout x urgency x supplier factor.
-* `python replay.py --n 300 --speed 20000 --reset` includes the scenarios. Add `--no-scenarios` for real shipments only, or `--n 0` for scenarios only.
-* The dashboard has a Scenarios tab, and each alert shows its priority breakdown.
-* Tests: `python -m unittest -v test_scenarios.py test_medical_priority.py`
-* `python test_llm.py` checks the configured LLM.
-* See `TEAM_PLAN.md` for the two person split, the contract between the model and UI work, and the demo script.
-
-## Live web dashboard (recommended on LinuxONE)
-
-Streamlit can't be installed on s390x because its `pyarrow` dependency has no LinuxONE build. `web_dashboard.py` serves a clean, light live dashboard using only the Python standard library, so it runs on the VM with nothing to install.
-
-```bash
-# terminal 1: event stream
+``` bash
 python replay.py --n 300 --speed 20000 --reset
-# terminal 2: dashboard
-python web_dashboard.py --port 8501
-# laptop: tunnel, then open http://localhost:8501
-ssh -i chainsight.pem -L 8501:localhost:8501 linux1@<VM_IP>
 ```
 
-What it shows: KPI row, live traffic feed, toast notifications (medical alerts stay until clicked, optional sound), a disruption banner, ranked shipments at risk, and an alert drawer. The drawer has the delivery band, priority breakdown, model drivers, counterfactual options, the GenAI verdict with citations, a draft email, and Approve and Reject buttons. There are also Scenarios, Suppliers (score against order history chart), Anomalies and Platform tabs. Files are in `web/` (index.html, app.css, app.js).
+Useful flags: - `--n 300`: number of test-period shipments to replay, in
+addition to configured demo scenarios. - `--speed 20000`: simulated
+seconds per real second. - `--speed 0`: replay without simulated
+waiting. - `--reset`: recreates the configured SQLite database. Back up
+any database you need before using it. - `--no-scenarios`: disables
+injected demo scenarios. - `--n 0`: scenario-only workflow if supported
+by the current checkout.
 
-The dashboard opens the database read only, so you can restart the replay with `--reset` while it runs: the page notices and starts the feed again.
+### Terminal 2: dashboard
+
+``` bash
+python web_dashboard.py --port 8501
+```
+
+The lightweight dashboard uses the Python standard library and avoids
+the optional Streamlit/PyArrow dependency path. Keep it running.
+
+### Laptop: SSH tunnel
+
+``` bash
+ssh -i chainsight.pem -N -L 8501:127.0.0.1:8501 <VM_USER>@<VM_IP>
+```
+
+Open **http://localhost:8501**. Keep the tunnel and dashboard processes
+running during the demo.
+
+Depending on the current checkout, the dashboard includes ranked at-risk
+shipments, priority breakdown, alert details, model drivers,
+counterfactual options, reviewer evidence, approval controls, scenarios,
+suppliers, anomalies, and platform information.
+
+## Configure the LLM reviewer
+
+The mock backend supports offline demos. For a real LLM, configure
+credentials before starting replay. Never commit API keys.
+
+### OpenAI-compatible endpoint
+
+``` bash
+export LLM_BACKEND=openai
+export LLM_BASE_URL="https://<your-endpoint>/v1"
+export LLM_API_KEY="<your-api-key>"
+export LLM_MODEL="<your-model>"
+```
+
+### IBM watsonx.ai
+
+``` bash
+pip install ibm-watsonx-ai
+export LLM_BACKEND=watsonx
+export WATSONX_URL="https://us-south.ml.cloud.ibm.com"
+export WATSONX_APIKEY="<your-watsonx-api-key>"
+export WATSONX_PROJECT_ID="<your-project-id>"
+export LLM_MODEL="ibm/granite-3-8b-instruct"
+```
+
+Confirm the SDK call and supported model in `reasoner.py` for the
+installed SDK version. The configured LLM call limit may send
+lower-priority alerts through rule-based text. Invalid schema,
+disallowed actions, or unsupported citations should be rejected by the
+validator. If the VM cannot reach the endpoint, use the mock backend or
+clearly disclose that the LLM component ran elsewhere.
+
+## Tests and evaluation
+
+Run available regression tests:
+
+``` bash
+python -m unittest -v test_scenarios.py test_medical_priority.py
+```
+
+If `test_medical_priority.py` is absent, run the tests that exist.
+Smoke-test the LLM configuration:
+
+``` bash
+python test_llm.py
+```
+
+Generate an evaluation report:
+
+``` bash
+python replay.py --n 300 --speed 0 --reset
+python evaluate.py
+```
+
+Check the report path emitted by `evaluate.py`; the current checkout may
+write to `artifacts/eval_report.md`. Use only numbers from actual
+evaluation outputs in slides. Clearly distinguish mock-reviewer results
+from real-LLM results and state the dataset/split and scenario setup.
+
+## Benchmarking on LinuxONE
+
+For a reproducible systems benchmark, fix the workload and record: -
+Events processed per second - Total replay duration - Per-event
+processing latency - Model scoring latency - Dashboard/API latency -
+Peak memory and CPU utilization - Errors and output consistency
+
+Start with the same input and scenario configuration at several values
+of `--n`, using `--speed 0` to remove simulated waiting. Repeat runs and
+record the VM flavor, architecture, Python/package versions, model
+artifacts, LLM backend, and database-reset policy.
+
+For a fair cross-platform comparison, keep code revision, data, model
+artifacts, dependency versions, VM sizing, and workload as comparable as
+possible. A single run or different VM sizes do not establish an IBM
+hardware speedup. This application benchmark is not, by itself, an
+AssetOpsBench result.
+
+
+## Assumptions and limitations
+
+1.  **Supplier identity:** DataCo does not provide a verified supplier
+    field for this implementation; a supplier proxy is derived from
+    fulfillment/department and market information.
+2.  **Criticality and medical classification:** A department mapping is
+    used as a demo proxy, not a verified medical product catalog.
+3.  **Inventory coverage:** Inventory cover is simulated, not connected
+    to a live inventory system.
+4.  **Anomalies and disruptions:** Delay events, price spikes, quantity
+    mismatches, cold-chain excursions, and scenario labels are
+    simulated. They are not live carrier or sensor feeds.
+5.  **Event updates:** Some breach-probability changes use configured
+    rules, not a model retrained after each event.
+6.  **LLM evaluation:** Mock output is not evidence of real-LLM
+    performance. Report real-LLM results only for runs that used a real
+    endpoint.
+7.  **Data infrastructure:** The hackathon build uses an in-process
+    event loop and SQLite. Kafka, PostgreSQL, FastAPI, and Machine
+    Learning for z/OS are production-design possibilities, not current
+    implementation claims unless separately deployed.
+8.  **Platform claims:** Running on LinuxONE demonstrates compatibility.
+    It does not automatically demonstrate IBM-specific ML acceleration,
+    configured confidential computing, or production high availability.
+9.  **Operational use:** This demo is not a clinical,
+    quality-management, or regulatory decision system. Consequential
+    actions require human review.
+
+## Security notes
+
+-   Keep SSH private keys private and use restrictive permissions such
+    as `chmod 600`.
+-   Store API keys in environment variables or a secrets manager, not
+    source files, notebooks, screenshots, or Git history.
+-   Avoid committing `chainsight.db`, private datasets, `.venv/`, local
+    logs, backups, or generated sensitive data unless intentionally
+    publishing them.
+-   Check dataset license and redistribution terms before committing or
+    sharing it.
+-   Prefer accessing services through an SSH tunnel. Expose ports
+    publicly only when explicitly allowed by the environment's security
+    policy.
+
+
+
+**ChainSight's proposition:** turn shipment events into ranked,
+explainable operational decisions, with explicit safety rules and human
+oversight, in a reproducible IBM LinuxONE demo environment.
