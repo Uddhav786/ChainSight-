@@ -5,6 +5,7 @@ Then open http://<VM_IP>:8501 (or tunnel: ssh -L 8501:localhost:8501 user@VM_IP)
 """
 import json
 import sqlite3
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
@@ -35,6 +36,20 @@ st.caption("Real time delivery risk, supplier scoring and grounded recommendatio
 if not DB_PATH.exists():
     st.warning("No data yet. Start the replay: python replay.py --reset")
     st.stop()
+
+# Persistent audit trail for human approval decisions.
+with sqlite3.connect(DB_PATH) as _con:
+    _con.execute("""
+        CREATE TABLE IF NOT EXISTS approval_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_id TEXT NOT NULL,
+            shipment_id INTEGER NOT NULL,
+            decision TEXT NOT NULL CHECK(decision IN ('APPROVED', 'REJECTED')),
+            reviewer TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            decided_ts TEXT NOT NULL
+        )
+    """)
 
 tab_live, tab_scn, tab_alert, tab_sup, tab_anom, tab_plat = st.tabs(
     ["Live risk", "Scenarios", "Alert detail", "Suppliers", "Anomalies", "Platform"])
@@ -143,15 +158,92 @@ with tab_alert:
             for cid in json.loads(a.citations):
                 st.markdown(f"- `{cid}`: {ev.get(cid, 'not found')}")
             st.text_area("Draft email (sent automatically)", a.draft_email, height=110)
-            if a.requires_approval and a.status == "OPEN":
-                if st.button("Approve action", type="primary"):
-                    con = sqlite3.connect(DB_PATH)
-                    con.execute("UPDATE alerts SET status='APPROVED' WHERE alert_id=?", (a.alert_id,))
-                    con.commit()
-                    con.close()
-                    st.success("Approved")
+            if a.requires_approval and a.status == "PENDING_APPROVAL":
+                st.warning("Human approval required. Approval authorizes the recommendation; it does not execute the shipment change.")
+
+                reviewer = st.text_input(
+                    "Reviewer name",
+                    key=f"reviewer_{a.alert_id}",
+                    placeholder="Enter your name",
+                )
+                rejection_reason = st.text_area(
+                    "Reason for rejection (required to reject)",
+                    key=f"reject_reason_{a.alert_id}",
+                    height=80,
+                )
+
+                approve_col, reject_col = st.columns(2)
+
+                with approve_col:
+                    if st.button("Approve recommendation", type="primary", key=f"approve_{a.alert_id}"):
+                        if not reviewer.strip():
+                            st.error("Enter the reviewer name before approving.")
+                        else:
+                            now = datetime.now(timezone.utc).isoformat()
+                            with sqlite3.connect(DB_PATH, timeout=10) as con:
+                                con.execute("BEGIN IMMEDIATE")
+                                cur = con.execute(
+                                    """UPDATE alerts SET status='APPROVED'
+                                       WHERE alert_id=? AND status='PENDING_APPROVAL'""",
+                                    (a.alert_id,),
+                                )
+                                if cur.rowcount == 1:
+                                    con.execute(
+                                        """INSERT INTO approval_decisions
+                                           (alert_id, shipment_id, decision, reviewer, reason, decided_ts)
+                                           VALUES (?, ?, 'APPROVED', ?, ?, ?)""",
+                                        (a.alert_id, int(a.shipment_id), reviewer.strip(),
+                                         "Approved recommendation; execution not confirmed.", now),
+                                    )
+                                    st.success("Recommendation approved. No shipment change was executed.")
+                                else:
+                                    st.error("This alert is no longer pending. Refresh and review its current status.")
+
+                            st.rerun()
+
+                with reject_col:
+                    if st.button("Reject recommendation", key=f"reject_{a.alert_id}"):
+                        if not reviewer.strip():
+                            st.error("Enter the reviewer name before rejecting.")
+                        elif not rejection_reason.strip():
+                            st.error("Enter a reason for rejection.")
+                        else:
+                            now = datetime.now(timezone.utc).isoformat()
+                            with sqlite3.connect(DB_PATH, timeout=10) as con:
+                                con.execute("BEGIN IMMEDIATE")
+                                cur = con.execute(
+                                    """UPDATE alerts SET status='REJECTED'
+                                       WHERE alert_id=? AND status='PENDING_APPROVAL'""",
+                                    (a.alert_id,),
+                                )
+                                if cur.rowcount == 1:
+                                    con.execute(
+                                        """INSERT INTO approval_decisions
+                                           (alert_id, shipment_id, decision, reviewer, reason, decided_ts)
+                                           VALUES (?, ?, 'REJECTED', ?, ?, ?)""",
+                                        (a.alert_id, int(a.shipment_id), reviewer.strip(),
+                                         rejection_reason.strip(), now),
+                                    )
+                                    st.success("Recommendation rejected and reason recorded.")
+                                else:
+                                    st.error("This alert is no longer pending. Refresh and review its current status.")
+
+                            st.rerun()
+
             else:
                 st.caption(f"Status: {a.status}")
+
+
+    st.divider()
+    st.subheader("Human approval audit trail")
+    audit = q(
+        """SELECT alert_id, shipment_id, decision, reviewer, reason, decided_ts
+           FROM approval_decisions ORDER BY id DESC LIMIT 50"""
+    )
+    if audit.empty:
+        st.caption("No human approval decisions recorded yet.")
+    else:
+        st.dataframe(audit, hide_index=True, use_container_width=True)
 
 with tab_sup:
     st.subheader("Live supplier scores (Bayesian shrinkage, updated on every delivery)")

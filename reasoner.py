@@ -134,7 +134,19 @@ def _mock(packet):
         verdict = "DISMISS"
     else:
         verdict = "DOWNGRADE"
-    action = packet["options"][0] if verdict != "DISMISS" else "monitor"
+    option_actions = packet["options"]
+    cold_chain = any(
+        "temperature" in ev.get(i, "").lower()
+        and ("excursion" in ev.get(i, "").lower()
+             or "cold chain" in ev.get(i, "").lower())
+        for i in anomalies
+    )
+    if cold_chain and "replace_shipment" in option_actions:
+        action = "replace_shipment"
+    elif verdict == "DISMISS" and "monitor" in option_actions:
+        action = "monitor"
+    else:
+        action = packet["options"][0]
     cites = (anomalies[:1] + delays[:1] + feats[:2] + ["model_breach", f"option:{action}"])
     top = ev[feats[0]].split(" (")[0] if feats else "model risk"
     if anomalies:

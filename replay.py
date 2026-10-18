@@ -23,6 +23,7 @@ from reasoner import evidence_packet, review
 from scoring import Scorer
 import scenarios as scn
 
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS shipments(shipment_id INTEGER PRIMARY KEY, order_ts TEXT, promised_ts TEXT, ship_mode TEXT,
   market TEXT, region TEXT, department TEXT, category TEXT, product_name TEXT, essential_goods_type TEXT,
@@ -233,7 +234,15 @@ class Engine:
         escalation = kind in ("DELAYED", "TEMP_EXCURSION") or new_anomaly
         if s["breach_prob"] < BREACH_THRESHOLD and s["priority"] < PRIORITY_ALERT and sid not in self.anoms:
             return
-        if prev is not None and not escalation:
+        safety_signal = kind == "TEMP_EXCURSION"
+        new_signal = escalation or new_anomaly
+
+        if prev is not None and not (
+            safety_signal
+            or (prev[0] == "DISMISS" and new_signal)
+            or escalation
+        ):
+            
             return
         rec = self.record(sid)
         anomaly_kinds = [str(a.get("kind", "")).strip().lower() for a in self.anoms.get(sid, [])]
@@ -262,7 +271,7 @@ class Engine:
             f"A{sid}", sid, str(now), s["breach_prob"], s["priority"], ans["verdict"], ans["root_cause"],
             ans["recommended_action"], ans["justification"], json.dumps(ans["citations"]), json.dumps(opts),
             json.dumps(packet["evidence"]), ans["draft_email"], int(needs_approval(ans["recommended_action"], o["criticality"])),
-            "OPEN" if ans["verdict"] != "DISMISS" else "DISMISSED", ans.get("source", ""), ans.get("llm_ms", 0),
+            "PENDING_APPROVAL" if needs_approval(ans["recommended_action"], o["criticality"]) else ("OPEN" if ans["verdict"] != "DISMISS" else "DISMISSED"), ans.get("source", ""), ans.get("llm_ms", 0),
             str(o["promised_ts"]), int(o["late"])))
 
     # ---------- main loop ----------

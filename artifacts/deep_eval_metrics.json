@@ -1,0 +1,19 @@
+{
+  "test_shipments_uncanceled": 9437,
+  "test_period_start": "2017-09-05 12:59:00",
+  "test_period_end": "2018-01-31 23:38:00",
+  "late_rate": 0.5753947228992264,
+  "eta_p50_mae_days": 1.044496772102773,
+  "scheduled_baseline_mae_days": 1.2920419624880788,
+  "eta_mae_improvement_vs_scheduled": 0.191592221903234,
+  "p10_p90_coverage": 0.9536929108826958,
+  "p10_p90_target_coverage": 0.8,
+  "mean_p10_p90_interval_width_days": 3.1490991884793043,
+  "breach_roc_auc": 0.7765111331413118,
+  "breach_pr_auc": 0.8369245371254543,
+  "prevalence_baseline_pr_auc": 0.5753947228992264,
+  "brier_calibrated": 0.17458659226636286,
+  "brier_prevalence_baseline": 0.24431563575894882,
+  "brier_skill_vs_prevalence": 0.28540557085500373,
+  "expected_calibration_error_10_bins": 0.010562185383370797
+}
