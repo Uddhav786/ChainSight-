@@ -97,9 +97,11 @@ function toast({ title, body, cls = "", sticky = false, sid = null, action = "Re
   $(".toast-close", el).onclick = close;
   if (sid) $(".btn", el).onclick = () => { openDrawer(sid); close(); };
   box.prepend(el);
-  if (!sticky) setTimeout(close, TOAST_MS);
-  const all = $$(".toast", box);
-  if (all.length > 4) all.slice(4).forEach((t) => t.remove());
+  const keep = action === "Review and approve"; // approval requests stay until handled
+  if (keep) el.classList.add("keep");
+  if (!sticky && !keep) setTimeout(close, TOAST_MS);
+  const all = $$(".toast:not(.keep)", box);
+  if (all.length > 3) all.slice(3).forEach((t) => t.remove());
   state.history.unshift({ title, body, sid, cls, at: state.summary ? state.summary.sim_clock : "" });
   state.history = state.history.slice(0, 80);
   state.unread += 1;

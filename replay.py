@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from books import PriceBook, SupplierBook, check_quantity
 from config import ART_DIR, BREACH_THRESHOLD, PRIORITY_ALERT, DB_PATH, DELAY_EVENT_LIFT, LLM_MAX_CALLS, LLM_MIN_PRIORITY, ORDERS_PKL
-from decision import needs_approval, options, priority_breakdown
+from decision import needs_approval, options, priority_breakdown, enforce_safety_policy
 from reasoner import evidence_packet, review
 from scoring import Scorer
 import scenarios as scn
@@ -190,8 +190,8 @@ class Engine:
             delivered = kind == "DELIVERED"
             self.book.update(o["supplier_id"], delivered, on_time=not o["late"], quality_ok=delivered and sid not in self.anoms)
             s["status"] = kind
-            s["breach_prob"] = float(o["late"]) if delivered else s["breach_prob"]
-            self.db.execute("UPDATE alerts SET status = CASE WHEN status='OPEN' THEN 'CLOSED' ELSE status END WHERE shipment_id=?", (sid,))
+            # keep the model prediction; the real outcome is stored separately in actual_late
+            self.db.execute("UPDATE alerts SET status = 'CLOSED' WHERE shipment_id=? AND status='OPEN' AND requires_approval=0", (sid,))
         s["last_event"] = kind
         ev["note"] = note
         self.trail.setdefault(sid, []).append({"event_id": ev["event_id"], "type": kind, "sim_ts": str(now), "note": note})
@@ -236,7 +236,15 @@ class Engine:
         if prev is not None and not escalation:
             return
         rec = self.record(sid)
-        opts = options(self.scorer, self.book, rec, s, [a["kind"] for a in self.anoms.get(sid, [])])
+        anomaly_kinds = [str(a.get("kind", "")).strip().lower() for a in self.anoms.get(sid, [])]
+        cold_chain = "temperature_excursion" in anomaly_kinds
+        opts = options(self.scorer, self.book, rec, s, anomaly_kinds)
+        # Safety fallback: ensure a replacement option exists for cold chain incidents
+        if cold_chain and not any(x.get("action") == "replace_shipment" for x in opts):
+            fallback = options(self.scorer, self.book, rec, s, anomaly_kinds + ["temperature_excursion"])
+            replacement = next((x for x in fallback if x.get("action") == "replace_shipment"), None)
+            if replacement is not None:
+                opts.insert(0, replacement)
         sup = {"name": o["supplier_name"], "score": self.book.score(o["supplier_id"]), "n_orders": self.book.n_orders(o["supplier_id"])}
         packet = evidence_packet({"shipment_id": sid, "criticality": int(o["criticality"]), "ship_mode": o["ship_mode"],
                                   "scheduled_days": float(o["scheduled_days"])},
@@ -244,6 +252,9 @@ class Engine:
         # Scenario shipments always get the LLM review so the demo stories are complete
         use_llm = bool(o.get("scenario")) or (self.llm_calls < LLM_MAX_CALLS and s["priority"] >= LLM_MIN_PRIORITY)
         ans = review(packet, opts, use_llm=use_llm)
+        anomaly_details = "; ".join(str(a.get("detail", "")) for a in self.anoms.get(sid, [])
+                                    if str(a.get("kind", "")).strip().lower() == "temperature_excursion")
+        ans = enforce_safety_policy(ans, opts, anomaly_kinds, anomaly_details)
         if use_llm:
             self.llm_calls += 1
         s["alerted"] = 1
