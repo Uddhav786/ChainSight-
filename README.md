@@ -72,7 +72,7 @@ Live Dashboard
   - Risk drivers and alerts
   - Recommended interventions
   - Approval status
-
+```
 ### IBM LinuxONE deployment
 
 The Python pipeline is intended to run on an IBM LinuxONE VM using Linux
